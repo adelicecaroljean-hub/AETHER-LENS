@@ -1,0 +1,904 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local camera = Workspace.CurrentCamera
+
+-- =========================================================
+-- CONFIGURATION, BRANDING & AUDIO
+-- =========================================================
+local SCRIPT_NAME = "AETHER LENS"
+local SCRIPT_VERSION = "STUDIO PRO v2.7"
+local LOGO_ASSET_ID = "rbxassetid://111685747991723"
+local BGM_ASSET_ID = "rbxassetid://110398343528156"
+
+local settings = {
+	toggleKey = Enum.KeyCode.P,
+	uiToggleKey = Enum.KeyCode.H,
+	baseSpeed = 35,
+	sprintMult = 3,
+	sensitivity = 0.22,
+	fov = 70,
+	smoothness = 0.12,
+	bgmVolume = 0.20,
+}
+
+-- Audio Controller
+local bgmSound = Instance.new("Sound")
+bgmSound.Name = "AetherBGM"
+bgmSound.SoundId = BGM_ASSET_ID
+bgmSound.Volume = 0
+bgmSound.Looped = true
+bgmSound.Parent = SoundService
+
+-- Localization
+local currentLang = "EN"
+
+local LOCALES = {
+	EN = {
+		subtitle = "Press [P] Freecam  |  [H] Hide UI  |  [RMB/Touch] Look",
+		btnEnable = "ENABLE FREECAM [P]",
+		btnActive = "FREECAM ACTIVE [P]",
+		speed = "Movement Speed",
+		fov = "Field of View (FOV)",
+		inertia = "Camera Inertia / Smoothness",
+		sensitivity = "Look Sensitivity",
+		bgmVol = "BGM Volume",
+		loadSteps = {
+			"INITIALIZING AETHER CORE Engine...",
+			"CALIBRATING CINEMATIC LENS...",
+			"CONFIGURING HIGH-PRECISION INPUTS...",
+			"OPTIMIZING GRAPHICS BUFFER...",
+			"AETHER LENS READY"
+		}
+	},
+	RU = {
+		subtitle = "Нажмите [P] Фрикам  |  [H] Скрыть UI  |  [ПКМ/Тач] Обзор",
+		btnEnable = "ВКЛЮЧИТЬ ФРИКАМ [P]",
+		btnActive = "ФРИКАМ АКТИВЕН [P]",
+		speed = "Скорость камеры",
+		fov = "Угол обзора (FOV)",
+		inertia = "Инерция / Плавность",
+		sensitivity = "Чувствительность",
+		bgmVol = "Громкость музыки",
+		loadSteps = {
+			"ИНИЦИАЛИЗАЦИЯ ЯДРА AETHER...",
+			"КАЛИБРОВКА КИНЕМАТОГРАФИЧЕСКОЙ ЛИНЗЫ...",
+			"НАСТРОЙКА ВЫСОКОТОЧНОГО ВВОДА...",
+			"ОПТИМИЗАЦИЯ ГРАФИЧЕСКОГО БУФЕРА...",
+			"СИСТЕМА AETHER ГОТОВА"
+		}
+	}
+}
+
+-- State
+local freecamActive = false
+local uiVisible = true
+local isRightMouseDown = false
+local touchPanning = false
+local touchStartPos = Vector2.zero
+
+local cameraPos = Vector3.zero
+local currentCFrame = CFrame.new()
+local targetCFrame = CFrame.new()
+local pitch = 0
+local yaw = 0
+
+local keysPressed = {
+	W = false, A = false, S = false, D = false,
+	E = false, Q = false, Shift = false
+}
+
+local textElements = {}
+
+---------------------------------------------------------
+-- CURSOR & CONTROL MANAGEMENT
+---------------------------------------------------------
+local function updateCursorState()
+	if freecamActive and (isRightMouseDown or touchPanning) then
+		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+		UserInputService.MouseIconEnabled = false
+	else
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		UserInputService.MouseIconEnabled = true
+	end
+end
+
+local function setCharacterControls(enabled)
+	local character = LocalPlayer.Character
+	if character then
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		local rootPart = character:FindFirstChild("HumanoidRootPart")
+
+		if humanoid then
+			humanoid:Move(Vector3.zero, false)
+		end
+
+		if rootPart then
+			rootPart.AssemblyLinearVelocity = Vector3.zero
+			rootPart.AssemblyAngularVelocity = Vector3.zero
+			rootPart.Anchored = not enabled
+		end
+	end
+
+	local playerScripts = LocalPlayer:FindFirstChild("PlayerScripts")
+	if playerScripts then
+		local playerModuleScript = playerScripts:FindFirstChild("PlayerModule")
+		if playerModuleScript then
+			local ok, playerModule = pcall(require, playerModuleScript)
+			if ok and playerModule then
+				local controls = playerModule:GetControls()
+				if controls then
+					if enabled then controls:Enable() else controls:Disable() end
+				end
+			end
+		end
+	end
+end
+
+---------------------------------------------------------
+-- RESPONSIVE GUI SETUP
+---------------------------------------------------------
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "AetherLensStudioGui"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.Parent = PlayerGui
+
+-- MAIN PANEL
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0.85, 0, 0.65, 0)
+mainFrame.Position = UDim2.new(0.02, 0, 0.20, 30)
+mainFrame.BackgroundColor3 = Color3.fromRGB(18, 20, 26)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Visible = false
+mainFrame.Parent = screenGui
+
+local sizeConstraint = Instance.new("UISizeConstraint")
+sizeConstraint.MinSize = Vector2.new(280, 370)
+sizeConstraint.MaxSize = Vector2.new(340, 440)
+sizeConstraint.Parent = mainFrame
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 12)
+mainCorner.Parent = mainFrame
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(42, 48, 62)
+mainStroke.Thickness = 1
+mainStroke.Parent = mainFrame
+
+-- Title Bar Header Area
+local titleBar = Instance.new("Frame")
+titleBar.Name = "TitleBar"
+titleBar.Size = UDim2.new(1, 0, 0, 52)
+titleBar.BackgroundTransparency = 1
+titleBar.Parent = mainFrame
+
+local cornerLogo = Instance.new("ImageLabel")
+cornerLogo.Name = "CornerLogo"
+cornerLogo.Size = UDim2.new(0, 28, 0, 28)
+cornerLogo.Position = UDim2.new(0, 12, 0, 12)
+cornerLogo.BackgroundTransparency = 1
+cornerLogo.Image = LOGO_ASSET_ID
+cornerLogo.ImageColor3 = Color3.fromRGB(0, 195, 255)
+cornerLogo.Parent = titleBar
+
+local cornerLogoRound = Instance.new("UICorner")
+cornerLogoRound.CornerRadius = UDim.new(1, 0)
+cornerLogoRound.Parent = cornerLogo
+
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, -110, 0, 22)
+titleLabel.Position = UDim2.new(0, 48, 0, 8)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = SCRIPT_NAME
+titleLabel.TextColor3 = Color3.fromRGB(245, 247, 255)
+titleLabel.TextSize = 14
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = titleBar
+
+local subTitle = Instance.new("TextLabel")
+subTitle.Size = UDim2.new(1, -110, 0, 16)
+subTitle.Position = UDim2.new(0, 48, 0, 28)
+subTitle.BackgroundTransparency = 1
+subTitle.Text = LOCALES[currentLang].subtitle
+subTitle.TextColor3 = Color3.fromRGB(115, 122, 138)
+subTitle.TextSize = 9
+subTitle.Font = Enum.Font.GothamMedium
+subTitle.TextXAlignment = Enum.TextXAlignment.Left
+subTitle.TextWrapped = true
+subTitle.Parent = titleBar
+textElements.subTitle = subTitle
+
+-- Language Switcher Button (EN / RU)
+local langBtn = Instance.new("TextButton")
+langBtn.Name = "LangBtn"
+langBtn.Size = UDim2.new(0, 44, 0, 24)
+langBtn.Position = UDim2.new(1, -54, 0, 14)
+langBtn.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
+langBtn.Text = "EN"
+langBtn.TextColor3 = Color3.fromRGB(0, 195, 255)
+langBtn.TextSize = 10
+langBtn.Font = Enum.Font.GothamBold
+langBtn.AutoButtonColor = false
+langBtn.Parent = titleBar
+
+local langCorner = Instance.new("UICorner")
+langCorner.CornerRadius = UDim.new(0, 6)
+langCorner.Parent = langBtn
+
+local langStroke = Instance.new("UIStroke")
+langStroke.Color = Color3.fromRGB(45, 52, 68)
+langStroke.Thickness = 1
+langStroke.Parent = langBtn
+
+-- Main Toggle Button
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Name = "ToggleBtn"
+toggleBtn.Size = UDim2.new(1, -24, 0, 38)
+toggleBtn.Position = UDim2.new(0, 12, 0, 58)
+toggleBtn.BackgroundColor3 = Color3.fromRGB(28, 32, 42)
+toggleBtn.Text = LOCALES[currentLang].btnEnable
+toggleBtn.TextColor3 = Color3.fromRGB(210, 215, 225)
+toggleBtn.TextSize = 11
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.AutoButtonColor = false
+toggleBtn.Parent = mainFrame
+textElements.toggleBtn = toggleBtn
+
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 8)
+toggleCorner.Parent = toggleBtn
+
+local toggleStroke = Instance.new("UIStroke")
+toggleStroke.Color = Color3.fromRGB(45, 52, 68)
+toggleStroke.Thickness = 1
+toggleStroke.Parent = toggleBtn
+
+-- Container for Sliders
+local container = Instance.new("Frame")
+container.Size = UDim2.new(1, -24, 1, -110)
+container.Position = UDim2.new(0, 12, 0, 104)
+container.BackgroundTransparency = 1
+container.Parent = mainFrame
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Padding = UDim.new(0, 8)
+listLayout.Parent = container
+
+---------------------------------------------------------
+-- ANIMATION UTILITIES
+---------------------------------------------------------
+local function attachButtonFx(btn, baseColor, hoverColor, strokeObj)
+	btn.MouseEnter:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.18), {BackgroundColor3 = hoverColor}):Play()
+		if strokeObj then
+			TweenService:Create(strokeObj, TweenInfo.new(0.18), {Color = Color3.fromRGB(0, 195, 255)}):Play()
+		end
+	end)
+	btn.MouseLeave:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.18), {BackgroundColor3 = baseColor}):Play()
+		if strokeObj then
+			TweenService:Create(strokeObj, TweenInfo.new(0.18), {Color = Color3.fromRGB(45, 52, 68)}):Play()
+		end
+	end)
+	btn.MouseButton1Down:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.08), {
+			Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset - 4, btn.Size.Y.Scale, btn.Size.Y.Offset - 2)
+		}):Play()
+	end)
+	btn.MouseButton1Up:Connect(function()
+		TweenService:Create(btn, TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			Size = UDim2.new(btn.Size.X.Scale, btn.Size.X.Offset, btn.Size.Y.Scale, btn.Size.Y.Offset)
+		}):Play()
+	end)
+end
+
+attachButtonFx(langBtn, Color3.fromRGB(28, 32, 42), Color3.fromRGB(36, 42, 56), langStroke)
+attachButtonFx(toggleBtn, Color3.fromRGB(28, 32, 42), Color3.fromRGB(36, 42, 56), toggleStroke)
+
+-- Header Dragging
+local draggingWindow = false
+local dragStartPos, frameStartPos
+
+titleBar.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		draggingWindow = true
+		dragStartPos = input.Position
+		frameStartPos = mainFrame.Position
+
+		local connection
+		connection = input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then
+				draggingWindow = false
+				connection:Disconnect()
+			end
+		end)
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if draggingWindow and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStartPos
+		mainFrame.Position = UDim2.new(
+			frameStartPos.X.Scale, 
+			frameStartPos.X.Offset + delta.X, 
+			frameStartPos.Y.Scale, 
+			frameStartPos.Y.Offset + delta.Y
+		)
+	end
+end)
+
+-- Setting Slider Row Creator
+local function createSettingRow(order, localeKey, minVal, maxVal, defaultVal, callback)
+	local row = Instance.new("Frame")
+	row.Size = UDim2.new(1, 0, 0, 50)
+	row.BackgroundColor3 = Color3.fromRGB(24, 27, 35)
+	row.BorderSizePixel = 0
+	row.LayoutOrder = order
+	row.Parent = container
+
+	local rowCorner = Instance.new("UICorner")
+	rowCorner.CornerRadius = UDim.new(0, 8)
+	rowCorner.Parent = row
+
+	local rowStroke = Instance.new("UIStroke")
+	rowStroke.Color = Color3.fromRGB(35, 40, 52)
+	rowStroke.Thickness = 1
+	rowStroke.Parent = row
+
+	local title = Instance.new("TextLabel")
+	title.Size = UDim2.new(0.65, 0, 0, 20)
+	title.Position = UDim2.new(0, 10, 0, 4)
+	title.BackgroundTransparency = 1
+	title.Text = LOCALES[currentLang][localeKey]
+	title.TextColor3 = Color3.fromRGB(215, 220, 230)
+	title.TextSize = 10
+	title.Font = Enum.Font.GothamMedium
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = row
+	textElements["row_" .. localeKey] = title
+
+	local valLabel = Instance.new("TextLabel")
+	valLabel.Size = UDim2.new(0.30, 0, 0, 20)
+	valLabel.Position = UDim2.new(0.68, 0, 0, 4)
+	valLabel.BackgroundTransparency = 1
+	valLabel.Text = tostring(defaultVal)
+	valLabel.TextColor3 = Color3.fromRGB(0, 195, 255)
+	valLabel.TextSize = 10
+	valLabel.Font = Enum.Font.GothamBold
+	valLabel.TextXAlignment = Enum.TextXAlignment.Right
+	valLabel.Parent = row
+
+	local track = Instance.new("Frame")
+	track.Size = UDim2.new(1, -20, 0, 6)
+	track.Position = UDim2.new(0, 10, 0, 31)
+	track.BackgroundColor3 = Color3.fromRGB(38, 44, 58)
+	track.BorderSizePixel = 0
+	track.Parent = row
+
+	local trackCorner = Instance.new("UICorner")
+	trackCorner.CornerRadius = UDim.new(1, 0)
+	trackCorner.Parent = track
+
+	local fill = Instance.new("Frame")
+	local initAlpha = math.clamp((defaultVal - minVal) / (maxVal - minVal), 0, 1)
+	fill.Size = UDim2.new(initAlpha, 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(0, 195, 255)
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+
+	local fillGrad = Instance.new("UIGradient")
+	fillGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 150, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 220, 255))
+	})
+	fillGrad.Parent = fill
+
+	row.MouseEnter:Connect(function()
+		TweenService:Create(row, TweenInfo.new(0.18), {BackgroundColor3 = Color3.fromRGB(28, 32, 42)}):Play()
+		TweenService:Create(rowStroke, TweenInfo.new(0.18), {Color = Color3.fromRGB(0, 195, 255)}):Play()
+	end)
+	row.MouseLeave:Connect(function()
+		TweenService:Create(row, TweenInfo.new(0.18), {BackgroundColor3 = Color3.fromRGB(24, 27, 35)}):Play()
+		TweenService:Create(rowStroke, TweenInfo.new(0.18), {Color = Color3.fromRGB(35, 40, 52)}):Play()
+	end)
+
+	local dragging = false
+
+	local function update(input)
+		local x = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+		local value = minVal + (maxVal - minVal) * x
+		
+		if (maxVal - minVal) <= 2 then
+			value = math.floor(value * 100 + 0.5) / 100
+		else
+			value = math.floor(value + 0.5)
+		end
+
+		TweenService:Create(fill, TweenInfo.new(0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.new(x, 0, 1, 0)
+		}):Play()
+
+		valLabel.Text = tostring(value)
+		callback(value)
+	end
+
+	track.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			update(input)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			update(input)
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+end
+
+-- Initialize Sliders
+createSettingRow(1, "speed", 5, 200, settings.baseSpeed, function(v) settings.baseSpeed = v end)
+createSettingRow(2, "fov", 10, 120, settings.fov, function(v) settings.fov = v end)
+createSettingRow(3, "inertia", 0.02, 0.50, settings.smoothness, function(v) settings.smoothness = v end)
+createSettingRow(4, "sensitivity", 0.05, 1.00, settings.sensitivity, function(v) settings.sensitivity = v end)
+createSettingRow(5, "bgmVol", 0.00, 1.00, settings.bgmVolume, function(v)
+	settings.bgmVolume = v
+	if bgmSound and not freecamActive then
+		bgmSound.Volume = settings.bgmVolume
+	end
+end)
+
+---------------------------------------------------------
+-- MENU ENTRANCE REVEAL
+---------------------------------------------------------
+local function revealMainMenu()
+	mainFrame.Visible = true
+
+	if bgmSound then
+		bgmSound.Volume = 0
+		bgmSound:Play()
+		TweenService:Create(bgmSound, TweenInfo.new(1.5), {Volume = settings.bgmVolume}):Play()
+	end
+
+	TweenService:Create(mainFrame, TweenInfo.new(0.6, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Position = UDim2.new(0.02, 0, 0.20, 0)
+	}):Play()
+end
+
+---------------------------------------------------------
+-- CINEMATIC LOADING SCREEN
+---------------------------------------------------------
+local function playLoadingScreen()
+	local loadBlur = Instance.new("BlurEffect")
+	loadBlur.Size = 0
+	loadBlur.Name = "AetherLoadBlur"
+	loadBlur.Parent = Lighting
+	TweenService:Create(loadBlur, TweenInfo.new(0.6), {Size = 20}):Play()
+
+	local loadFrame = Instance.new("Frame")
+	loadFrame.Name = "LoadingScreen"
+	loadFrame.Size = UDim2.new(1, 0, 1, 0)
+	loadFrame.BackgroundColor3 = Color3.fromRGB(10, 11, 15)
+	loadFrame.BorderSizePixel = 0
+	loadFrame.ZIndex = 100
+	loadFrame.Parent = screenGui
+
+	local bgGrad = Instance.new("UIGradient")
+	bgGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(16, 20, 30)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(10, 11, 15)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(14, 16, 24))
+	})
+	bgGrad.Rotation = 135
+	bgGrad.Parent = loadFrame
+
+	local emblemFrame = Instance.new("Frame")
+	emblemFrame.Size = UDim2.new(0, 120, 0, 120)
+	emblemFrame.Position = UDim2.new(0.5, -60, 0.36, -60)
+	emblemFrame.BackgroundTransparency = 1
+	emblemFrame.ZIndex = 101
+	emblemFrame.Parent = loadFrame
+
+	local orbitRing = Instance.new("Frame")
+	orbitRing.Size = UDim2.new(1, 24, 1, 24)
+	orbitRing.Position = UDim2.new(0, -12, 0, -12)
+	orbitRing.BackgroundTransparency = 1
+	orbitRing.ZIndex = 101
+	orbitRing.Parent = emblemFrame
+
+	local ringCorner = Instance.new("UICorner")
+	ringCorner.CornerRadius = UDim.new(1, 0)
+	ringCorner.Parent = orbitRing
+
+	local ringStroke = Instance.new("UIStroke")
+	ringStroke.Color = Color3.fromRGB(0, 195, 255)
+	ringStroke.Thickness = 2
+	ringStroke.Transparency = 0.3
+	ringStroke.Parent = orbitRing
+
+	local loadLogo = Instance.new("ImageLabel")
+	loadLogo.Size = UDim2.new(0, 0, 0, 0)
+	loadLogo.Position = UDim2.new(0.5, 0, 0.5, 0)
+	loadLogo.BackgroundTransparency = 1
+	loadLogo.Image = LOGO_ASSET_ID
+	loadLogo.ImageColor3 = Color3.fromRGB(255, 255, 255)
+	loadLogo.ZIndex = 103
+	loadLogo.Parent = emblemFrame
+
+	local loadLogoRound = Instance.new("UICorner")
+	loadLogoRound.CornerRadius = UDim.new(1, 0)
+	loadLogoRound.Parent = loadLogo
+
+	local logoGlow = Instance.new("ImageLabel")
+	logoGlow.Size = UDim2.new(1.3, 0, 1.3, 0)
+	logoGlow.Position = UDim2.new(-0.15, 0, -0.15, 0)
+	logoGlow.BackgroundTransparency = 1
+	logoGlow.Image = LOGO_ASSET_ID
+	logoGlow.ImageColor3 = Color3.fromRGB(0, 170, 255)
+	logoGlow.ImageTransparency = 0.8
+	logoGlow.ZIndex = 102
+	logoGlow.Parent = emblemFrame
+
+	local logoGlowRound = Instance.new("UICorner")
+	logoGlowRound.CornerRadius = UDim.new(1, 0)
+	logoGlowRound.Parent = logoGlow
+
+	local spinConnection
+	spinConnection = RunService.RenderStepped:Connect(function(dt)
+		if orbitRing and orbitRing.Parent then
+			orbitRing.Rotation = (orbitRing.Rotation + dt * 90) % 360
+		end
+	end)
+
+	TweenService:Create(loadLogo, TweenInfo.new(0.8, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Size = UDim2.new(1, 0, 1, 0),
+		Position = UDim2.new(0, 0, 0, 0)
+	}):Play()
+
+	local titleLabel = Instance.new("TextLabel")
+	titleLabel.Size = UDim2.new(1, 0, 0, 30)
+	titleLabel.Position = UDim2.new(0, 0, 0.36, 75)
+	titleLabel.BackgroundTransparency = 1
+	titleLabel.Text = SCRIPT_NAME
+	titleLabel.TextColor3 = Color3.fromRGB(245, 247, 255)
+	titleLabel.TextSize = 22
+	titleLabel.Font = Enum.Font.GothamBold
+	titleLabel.ZIndex = 101
+	titleLabel.Parent = loadFrame
+
+	local verBadge = Instance.new("TextLabel")
+	verBadge.Size = UDim2.new(1, 0, 0, 16)
+	verBadge.Position = UDim2.new(0, 0, 0.36, 105)
+	verBadge.BackgroundTransparency = 1
+	verBadge.Text = SCRIPT_VERSION
+	verBadge.TextColor3 = Color3.fromRGB(0, 195, 255)
+	verBadge.TextSize = 10
+	verBadge.Font = Enum.Font.GothamBold
+	verBadge.ZIndex = 101
+	verBadge.Parent = loadFrame
+
+	local statusLabel = Instance.new("TextLabel")
+	statusLabel.Size = UDim2.new(1, 0, 0, 20)
+	statusLabel.Position = UDim2.new(0, 0, 0.36, 132)
+	statusLabel.BackgroundTransparency = 1
+	statusLabel.Text = LOCALES[currentLang].loadSteps[1]
+	statusLabel.TextColor3 = Color3.fromRGB(125, 135, 155)
+	statusLabel.TextSize = 11
+	statusLabel.Font = Enum.Font.GothamMedium
+	statusLabel.ZIndex = 101
+	statusLabel.Parent = loadFrame
+
+	local percentLabel = Instance.new("TextLabel")
+	percentLabel.Size = UDim2.new(0, 60, 0, 20)
+	percentLabel.Position = UDim2.new(0.5, 95, 0.36, 156)
+	percentLabel.BackgroundTransparency = 1
+	percentLabel.Text = "0%"
+	percentLabel.TextColor3 = Color3.fromRGB(0, 195, 255)
+	percentLabel.TextSize = 11
+	percentLabel.Font = Enum.Font.GothamBold
+	percentLabel.TextXAlignment = Enum.TextXAlignment.Right
+	percentLabel.ZIndex = 101
+	percentLabel.Parent = loadFrame
+
+	local barBg = Instance.new("Frame")
+	barBg.Size = UDim2.new(0, 250, 0, 5)
+	barBg.Position = UDim2.new(0.5, -125, 0.36, 164)
+	barBg.BackgroundColor3 = Color3.fromRGB(24, 28, 38)
+	barBg.BorderSizePixel = 0
+	barBg.ZIndex = 101
+	barBg.Parent = loadFrame
+
+	local barCorner = Instance.new("UICorner")
+	barCorner.CornerRadius = UDim.new(1, 0)
+	barCorner.Parent = barBg
+
+	local barFill = Instance.new("Frame")
+	barFill.Size = UDim2.new(0, 0, 1, 0)
+	barFill.BackgroundColor3 = Color3.fromRGB(0, 195, 255)
+	barFill.BorderSizePixel = 0
+	barFill.ZIndex = 102
+	barFill.Parent = barBg
+
+	local fillGrad = Instance.new("UIGradient")
+	fillGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 140, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 230, 255))
+	})
+	fillGrad.Parent = barFill
+
+	local steps = LOCALES[currentLang].loadSteps
+	local targets = {0.20, 0.48, 0.75, 0.92, 1.00}
+	local durations = {0.8, 0.9, 0.9, 0.7, 0.5}
+
+	local currentProgress = 0
+
+	for i = 1, #steps do
+		statusLabel.Text = steps[i]
+		local startVal = currentProgress
+		local endVal = targets[i]
+		local dur = durations[i]
+
+		TweenService:Create(barFill, TweenInfo.new(dur, Enum.EasingStyle.Cubic, Enum.EasingDirection.Out), {
+			Size = UDim2.new(endVal, 0, 1, 0)
+		}):Play()
+
+		local startTime = tick()
+		while (tick() - startTime) < dur do
+			local alpha = (tick() - startTime) / dur
+			local val = math.floor((startVal + (endVal - startVal) * alpha) * 100)
+			percentLabel.Text = tostring(math.clamp(val, 0, 100)) .. "%"
+			task.wait()
+		end
+
+		currentProgress = endVal
+		percentLabel.Text = tostring(math.floor(endVal * 100)) .. "%"
+	end
+
+	task.wait(0.3)
+
+	local flashFrame = Instance.new("Frame")
+	flashFrame.Size = UDim2.new(1, 0, 1, 0)
+	flashFrame.BackgroundColor3 = Color3.fromRGB(0, 195, 255)
+	flashFrame.BackgroundTransparency = 1
+	flashFrame.ZIndex = 110
+	flashFrame.Parent = screenGui
+
+	TweenService:Create(flashFrame, TweenInfo.new(0.15), {BackgroundTransparency = 0.85}):Play()
+	task.wait(0.15)
+	TweenService:Create(flashFrame, TweenInfo.new(0.35), {BackgroundTransparency = 1}):Play()
+
+	if spinConnection then spinConnection:Disconnect() end
+
+	local fadeInfo = TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(loadBlur, fadeInfo, {Size = 0}):Play()
+	TweenService:Create(loadFrame, fadeInfo, {BackgroundTransparency = 1}):Play()
+	TweenService:Create(loadLogo, fadeInfo, {ImageTransparency = 1}):Play()
+	TweenService:Create(logoGlow, fadeInfo, {ImageTransparency = 1}):Play()
+	TweenService:Create(ringStroke, fadeInfo, {Transparency = 1}):Play()
+	TweenService:Create(titleLabel, fadeInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(verBadge, fadeInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(statusLabel, fadeInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(percentLabel, fadeInfo, {TextTransparency = 1}):Play()
+	TweenService:Create(barBg, fadeInfo, {BackgroundTransparency = 1}):Play()
+	TweenService:Create(barFill, fadeInfo, {BackgroundTransparency = 1}):Play()
+
+	task.wait(0.5)
+	loadFrame:Destroy()
+	loadBlur:Destroy()
+	flashFrame:Destroy()
+
+	revealMainMenu()
+end
+
+---------------------------------------------------------
+-- DYNAMIC LANGUAGE SWITCHER
+---------------------------------------------------------
+local function updateLanguage(lang)
+	currentLang = lang
+	langBtn.Text = currentLang
+
+	subTitle.Text = LOCALES[currentLang].subtitle
+	toggleBtn.Text = freecamActive and LOCALES[currentLang].btnActive or LOCALES[currentLang].btnEnable
+
+	textElements["row_speed"].Text = LOCALES[currentLang].speed
+	textElements["row_fov"].Text = LOCALES[currentLang].fov
+	textElements["row_inertia"].Text = LOCALES[currentLang].inertia
+	textElements["row_sensitivity"].Text = LOCALES[currentLang].sensitivity
+	textElements["row_bgmVol"].Text = LOCALES[currentLang].bgmVol
+end
+
+langBtn.MouseButton1Click:Connect(function()
+	local nextLang = (currentLang == "EN") and "RU" or "EN"
+	updateLanguage(nextLang)
+end)
+
+---------------------------------------------------------
+-- FREECAM LOGIC
+---------------------------------------------------------
+local function setFreecamState(active)
+	freecamActive = active
+
+	for k in pairs(keysPressed) do
+		keysPressed[k] = false
+	end
+
+	if freecamActive then
+		toggleBtn.Text = LOCALES[currentLang].btnActive
+		TweenService:Create(toggleBtn, TweenInfo.new(0.2), {
+			BackgroundColor3 = Color3.fromRGB(0, 160, 230),
+			TextColor3 = Color3.fromRGB(255, 255, 255)
+		}):Play()
+
+		if bgmSound then
+			TweenService:Create(bgmSound, TweenInfo.new(0.5), {Volume = settings.bgmVolume * 0.25}):Play()
+		end
+
+		camera.CameraType = Enum.CameraType.Scriptable
+		cameraPos = camera.CFrame.Position
+		targetCFrame = camera.CFrame
+		currentCFrame = camera.CFrame
+
+		local rx, ry, _ = camera.CFrame:ToOrientation()
+		pitch = math.deg(rx)
+		yaw = math.deg(ry)
+
+		setCharacterControls(false)
+		updateCursorState()
+	else
+		toggleBtn.Text = LOCALES[currentLang].btnEnable
+		TweenService:Create(toggleBtn, TweenInfo.new(0.2), {
+			BackgroundColor3 = Color3.fromRGB(28, 32, 42),
+			TextColor3 = Color3.fromRGB(210, 215, 225)
+		}):Play()
+
+		if bgmSound then
+			TweenService:Create(bgmSound, TweenInfo.new(0.5), {Volume = settings.bgmVolume}):Play()
+		end
+
+		camera.CameraType = Enum.CameraType.Custom
+		if LocalPlayer.Character then
+			local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				camera.CameraSubject = humanoid
+			end
+		end
+
+		isRightMouseDown = false
+		touchPanning = false
+		setCharacterControls(true)
+		updateCursorState()
+	end
+end
+
+local function toggleFreecam()
+	setFreecamState(not freecamActive)
+end
+
+local function toggleGuiVisibility()
+	uiVisible = not uiVisible
+	mainFrame.Visible = uiVisible
+end
+
+toggleBtn.MouseButton1Click:Connect(toggleFreecam)
+
+-- Keyboard & Touch Input Handlers
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+
+	if input.KeyCode == settings.toggleKey then
+		toggleFreecam()
+	elseif input.KeyCode == settings.uiToggleKey then
+		toggleGuiVisibility()
+	elseif freecamActive then
+		if input.KeyCode == Enum.KeyCode.W then keysPressed.W = true end
+		if input.KeyCode == Enum.KeyCode.S then keysPressed.S = true end
+		if input.KeyCode == Enum.KeyCode.A then keysPressed.A = true end
+		if input.KeyCode == Enum.KeyCode.D then keysPressed.D = true end
+		if input.KeyCode == Enum.KeyCode.E then keysPressed.E = true end
+		if input.KeyCode == Enum.KeyCode.Q then keysPressed.Q = true end
+		if input.KeyCode == Enum.KeyCode.LeftShift then keysPressed.Shift = true end
+	end
+
+	-- Right Mouse Look
+	if input.UserInputType == Enum.UserInputType.MouseButton2 and freecamActive then
+		isRightMouseDown = true
+		updateCursorState()
+	end
+
+	-- Mobile Touch Pan
+	if input.UserInputType == Enum.UserInputType.Touch and freecamActive then
+		touchPanning = true
+		touchStartPos = Vector2.new(input.Position.X, input.Position.Y)
+		updateCursorState()
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.W then keysPressed.W = false end
+	if input.KeyCode == Enum.KeyCode.S then keysPressed.S = false end
+	if input.KeyCode == Enum.KeyCode.A then keysPressed.A = false end
+	if input.KeyCode == Enum.KeyCode.D then keysPressed.D = false end
+	if input.KeyCode == Enum.KeyCode.E then keysPressed.E = false end
+	if input.KeyCode == Enum.KeyCode.Q then keysPressed.Q = false end
+	if input.KeyCode == Enum.KeyCode.LeftShift then keysPressed.Shift = false end
+
+	if input.UserInputType == Enum.UserInputType.MouseButton2 then
+		isRightMouseDown = false
+		updateCursorState()
+	end
+
+	if input.UserInputType == Enum.UserInputType.Touch then
+		touchPanning = false
+		updateCursorState()
+	end
+end)
+
+-- Mouse & Touch Camera Look Delta Computation
+UserInputService.InputChanged:Connect(function(input)
+	if not freecamActive then return end
+
+	if isRightMouseDown and input.UserInputType == Enum.UserInputType.MouseMovement then
+		yaw = yaw - input.Delta.X * settings.sensitivity
+		pitch = math.clamp(pitch - input.Delta.Y * settings.sensitivity, -89, 89)
+	elseif touchPanning and input.UserInputType == Enum.UserInputType.Touch then
+		local currentPos = Vector2.new(input.Position.X, input.Position.Y)
+		local delta = currentPos - touchStartPos
+		touchStartPos = currentPos
+
+		yaw = yaw - delta.X * (settings.sensitivity * 0.8)
+		pitch = math.clamp(pitch - delta.Y * (settings.sensitivity * 0.8), -89, 89)
+	end
+end)
+
+-- Render Update Loop
+RunService.RenderStepped:Connect(function(dt)
+	if not freecamActive then return end
+
+	local rotCFrame = CFrame.Angles(0, math.rad(yaw), 0) * CFrame.Angles(math.rad(pitch), 0, 0)
+
+	local moveDir = Vector3.zero
+	if keysPressed.W then moveDir += Vector3.new(0, 0, -1) end
+	if keysPressed.S then moveDir += Vector3.new(0, 0, 1) end
+	if keysPressed.A then moveDir += Vector3.new(-1, 0, 0) end
+	if keysPressed.D then moveDir += Vector3.new(1, 0, 0) end
+	if keysPressed.E then moveDir += Vector3.new(0, 1, 0) end
+	if keysPressed.Q then moveDir += Vector3.new(0, -1, 0) end
+
+	if moveDir.Magnitude > 0 then
+		moveDir = moveDir.Unit
+	end
+
+	local speed = settings.baseSpeed * (keysPressed.Shift and settings.sprintMult or 1)
+	local worldDelta = rotCFrame:VectorToWorldSpace(moveDir) * (speed * dt)
+
+	cameraPos = cameraPos + worldDelta
+	targetCFrame = CFrame.new(cameraPos) * rotCFrame
+
+	local alpha = math.clamp(dt * (1 / settings.smoothness) * 10, 0, 1)
+	currentCFrame = currentCFrame:Lerp(targetCFrame, alpha)
+	camera.CFrame = currentCFrame
+
+	camera.FieldOfView = camera.FieldOfView + (settings.fov - camera.FieldOfView) * alpha
+end)
+
+-- Startup Sequence
+task.spawn(playLoadingScreen)
